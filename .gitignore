@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+chain/node_modules/
+chain/cache/
+chain/artifacts/
+data/
+config/witness.yaml
+config/agent.yaml
+*.log
+root-defense-proof-*.json

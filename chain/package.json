@@ -1,0 +1,14 @@
+{
+  "name": "root-defense-chain",
+  "private": true,
+  "description": "Root-Defense chain tooling: local Hardhat node, Solidity compiler and Quai Orchard adapter",
+  "scripts": {
+    "node": "hardhat node --hostname 127.0.0.1 --port 8545",
+    "compile": "node compile.js"
+  },
+  "dependencies": {
+    "hardhat": "2.29.2",
+    "quais": "1.0.0-alpha.58",
+    "solc": "0.8.39"
+  }
+}

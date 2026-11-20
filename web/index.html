@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Root-Defense · Witness Console</title>
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <img src="/static/logo.svg" alt="" width="34" height="34">
+    <div>
+      <div class="brand-name">Root-Defense</div>
+      <div class="brand-sub">Witness Console</div>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="monitor">Live Monitor</button>
+    <button class="tab" data-view="auditor">Auditor</button>
+    <button class="tab" data-view="chain">Blockchain</button>
+    <button class="tab" data-view="compliance">Compliance</button>
+  </nav>
+  <div class="topright">
+    <button id="soundBtn" class="icon-btn" title="Alarm sound on/off" aria-label="Toggle alarm sound">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path id="soundWaves" d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
+    </button>
+    <div id="chainPill" class="pill"><span class="dot"></span><span>Connecting…</span></div>
+    <div id="clock" class="clock mono">--:--:--</div>
+  </div>
+</header>
+
+<div id="alarmBanner" class="alarm-banner hidden" role="alert">
+  <div class="alarm-icon">
+    <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+  </div>
+  <div class="alarm-body">
+    <div class="alarm-title" id="alarmTitle"></div>
+    <div class="alarm-sub" id="alarmSub"></div>
+  </div>
+  <div class="alarm-metric" id="alarmMetric"></div>
+  <div class="alarm-actions">
+    <button class="btn btn-light" id="alarmInvestigate">Investigate</button>
+    <button class="btn btn-ghost-light" id="alarmAck">Acknowledge</button>
+  </div>
+</div>
+
+<main>
+  <!-- ============================================================ MONITOR -->
+  <section id="view-monitor" class="view active">
+    <div class="kpis">
+      <div class="kpi kpi-agent" id="kpiAgent">
+        <div class="kpi-label">Monitored server</div>
+        <div class="kpi-agent-row">
+          <div>
+            <div class="kpi-value" id="agentState">—</div>
+            <div class="kpi-foot" id="agentFoot">waiting for agent</div>
+          </div>
+          <svg class="ecg" viewBox="0 0 160 48" preserveAspectRatio="none" aria-hidden="true">
+            <path id="ecgPath" d="M0 24 H40 L48 24 L54 8 L62 40 L68 18 L74 24 H110 L116 24 L122 10 L130 38 L136 20 L140 24 H160"/>
+          </svg>
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Entries witnessed off-host</div>
+        <div class="kpi-value" id="kEntries">0</div>
+        <div class="kpi-foot" id="kEntriesFoot">logs · heartbeats</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Anchored on blockchain</div>
+        <div class="kpi-value" id="kAnchored">0</div>
+        <div class="kpi-foot" id="kAnchoredFoot">0 batches</div>
+      </div>
+      <div class="kpi kpi-accent">
+        <div class="kpi-label">Tamper detection time</div>
+        <div class="kpi-value" id="kDetect">—</div>
+        <div class="kpi-foot">vs up to <b>60 min</b> with hourly anchoring</div>
+      </div>
+      <div class="kpi" id="kpiAlarms">
+        <div class="kpi-label">Open alarms</div>
+        <div class="kpi-value" id="kAlarms">0</div>
+        <div class="kpi-foot" id="kAlarmsFoot">all clear</div>
+      </div>
+    </div>
+
+    <div class="grid-main">
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Live evidence stream</h2>
+            <p class="muted">Each line is hashed, chained, signed with a one-time key and copied here within a second.</p>
+          </div>
+          <div class="seg" id="streamFilter">
+            <button class="seg-btn active" data-kind="">All</button>
+            <button class="seg-btn" data-kind="log">Logs</button>
+            <button class="seg-btn" data-kind="heartbeat">Heartbeats</button>
+            <button class="seg-btn" data-kind="tamper">Tamper</button>
+          </div>
+        </div>
+        <div class="table-wrap stream">
+          <table class="tbl">
+            <thead><tr><th>Time</th><th>#</th><th>Type</th><th>Source</th><th>Content</th><th>Proof</th></tr></thead>
+            <tbody id="streamBody"><tr><td colspan="6" class="empty">No entries yet. Start the agent on System A.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="side">
+        <div class="panel">
+          <div class="panel-head"><h2>Security alarms</h2><button class="btn btn-small btn-ghost" id="ackAll">Acknowledge all</button></div>
+          <ul class="feed" id="eventFeed"><li class="empty">No events yet.</li></ul>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Latest anchors</h2><span class="muted small" id="anchorEvery"></span></div>
+          <ul class="anchors" id="anchorList"><li class="empty">No anchors yet.</li></ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ AUDITOR -->
+  <section id="view-auditor" class="view">
+    <div class="panel audit-controls">
+      <div class="audit-intro">
+        <h2>Auditor portal</h2>
+        <p class="muted">Recomputes every hash, signature and Merkle root, compares them with the blockchain and with the logs as they exist on the server right now.</p>
+      </div>
+      <div class="audit-actions">
+        <label class="field">
+          <span>Server</span>
+          <select id="auditAgent"></select>
+        </label>
+        <button class="btn btn-primary" id="btnCollect">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+          Collect live logs &amp; verify
+        </button>
+        <button class="btn" id="btnHistory">Verify witness vs blockchain</button>
+        <label class="btn" id="btnUploadLbl">
+          Upload log files
+          <input type="file" id="uploadInput" multiple hidden>
+        </label>
+      </div>
+    </div>
+    <div id="auditStatus" class="audit-status hidden"></div>
+    <div id="auditResult"></div>
+  </section>
+
+  <!-- ============================================================ CHAIN -->
+  <section id="view-chain" class="view">
+    <div class="chain-grid">
+      <div class="panel chain-card">
+        <div class="panel-head"><h2>Root registry contract</h2><span class="pill" id="chainMode">—</span></div>
+        <dl class="kv" id="chainKv"></dl>
+        <div class="row-actions">
+          <button class="btn btn-primary" id="btnAnchorNow">Anchor pending entries now</button>
+          <button class="btn" id="btnVerifyChain">Verify every batch on-chain</button>
+          <a class="btn hidden" id="explorerLink" target="_blank" rel="noopener">Open in explorer ↗</a>
+        </div>
+      </div>
+      <div class="panel explain">
+        <h2>What goes on-chain</h2>
+        <ul class="checks">
+          <li><b>Only a 32-byte Merkle root</b> per batch, plus the sequence range and count.</li>
+          <li><b>Never raw log text.</b> Lines stay encrypted on the witness.</li>
+          <li><b>One transaction commits to the whole batch</b>, so cost doesn’t grow with log volume.</li>
+          <li><b>Extra anchors fire instantly</b> on critical activity and on every alarm.</li>
+          <li><b>Nobody can rewrite it</b>, not even the company. Auditors verify without trusting us.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Anchored batches</h2><span class="muted small" id="batchVerifyNote"></span></div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>Batch</th><th>Server</th><th>Entries</th><th>Seq range</th><th>Reason</th><th>Merkle root</th><th>Transaction</th><th>Block</th><th>Anchored</th><th>On-chain check</th></tr></thead>
+          <tbody id="batchBody"><tr><td colspan="10" class="empty">No batches yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ COMPLIANCE -->
+  <section id="view-compliance" class="view">
+    <div class="panel comp-head">
+      <div>
+        <div class="eyebrow">CERT-In Directions · 28 April 2022</div>
+        <h2>Log retention &amp; incident reporting evidence</h2>
+        <p class="muted">Logs must be retained for 180 days and specified incidents reported within 6 hours. Every alarm below is timestamped and anchored on-chain as evidence.</p>
+      </div>
+      <a class="btn btn-primary" href="/api/v1/compliance/report" target="_blank" rel="noopener">Generate evidence report ↗</a>
+    </div>
+    <div class="comp-grid">
+      <div class="panel">
+        <h2>Retention coverage</h2>
+        <div id="retention"></div>
+      </div>
+      <div class="panel">
+        <h2>Controls</h2>
+        <ul class="controls" id="controls"></ul>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Incident timeline &amp; 6-hour reporting clock</h2></div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>Detected</th><th>Incident</th><th>Server</th><th>Report by</th><th>Time left</th><th>On-chain evidence</th></tr></thead>
+          <tbody id="incidentBody"><tr><td colspan="6" class="empty">No critical incidents.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>Root-Defense · tamper-evident logging · hash chain · forward-secure signatures · Merkle anchoring</span>
+  <span id="footVersion" class="mono"></span>
+</footer>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
