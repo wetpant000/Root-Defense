@@ -87,6 +87,36 @@ original and a verified Merkle proof for each. **Download proof bundle**, then v
 
 Start a clean demo at any time: `./rd up --reset` on B and `./rd reset --agent --yes` on A.
 
+## Real mode: real system logs, no synthetic data
+
+By default `up-agent` generates synthetic log traffic, and `attack intrude` writes simulated attacker lines.
+In **real mode** the agent watches the machine's real `/var/log/auth.log`. Every event comes from real
+logins and real `sudo` commands, and the tampering is done as root on the real file.
+
+**System A (Linux or WSL Ubuntu), once:**
+```bash
+sudo apt install -y rsyslog openssh-server
+sudo service rsyslog start && sudo service ssh start
+groups | grep -q adm || sudo usermod -aG adm $USER     # then log out/in (WSL: run `wsl --shutdown` in PowerShell)
+./rd init-agent --real --witness http://<B-ip>:8800 --token <token>
+./rd up-agent                                          # prints "REAL MODE"
+```
+
+**Create real security events:**
+```bash
+ssh nosuchuser@localhost          # type a wrong password 2-3 times → real "Failed password" lines (sshd)
+./rd attack intrude               # real failed sudo attempts + a real `sudo cat /etc/shadow` (asks for your password)
+```
+
+**Tamper as root, like a real attacker:**
+```bash
+sudo ./rd attack delete --match "/etc/shadow"                       # erase the evidence of reading the password hashes
+sudo ./rd attack edit --match "nosuchuser" --replace "nosuchuser" "deploy"
+sudo nano /var/log/auth.log                                         # or delete/edit any line by hand and save
+```
+The attack tools edit the file in place (same inode), so rsyslog keeps logging afterwards. The agent reads the
+existing contents of `auth.log` on its first start, so those lines are witnessed from that moment on.
+
 ## Switching to Quai Network (Orchard testnet)
 
 The contract and the code already support Quai through the official `quais` SDK. The demo runs on a local
@@ -111,8 +141,8 @@ EVM chain only because the public faucet was unavailable. To switch:
 |---|---|---|
 | `./rd setup` | both | install dependencies, compile the contract |
 | `./rd init-witness` / `./rd up` | B | configure / start chain + witness + dashboard |
-| `./rd init-agent` / `./rd up-agent` | A | configure / start agent with demo traffic |
-| `./rd attack <intrude\|edit\|delete\|kill\|wipe\|truncate>` | A | simulate the attacker |
+| `./rd init-agent [--real]` / `./rd up-agent` | A | configure / start the agent (demo traffic, or real `/var/log/auth.log`) |
+| `[sudo] ./rd attack <intrude\|edit\|delete\|kill\|wipe\|truncate> [--match T] [--line N] [--replace OLD NEW]` | A | attacker actions |
 | `./rd status` | B | witness status in the terminal |
 | `./rd verify-bundle FILE` | any | independently verify a proof bundle against the chain |
 | `./rd bench` | any | throughput numbers for the Evidence slide |

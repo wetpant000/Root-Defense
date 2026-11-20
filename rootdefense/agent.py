@@ -17,6 +17,7 @@ import signal
 import socket
 import sqlite3
 import sys
+import threading
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -186,6 +187,10 @@ class Agent:
     def _scan(self) -> None:
         for w in self.watchers:
             new, ops, mtime = w.poll()
+            if ops:
+                # Re-read once so a file caught in the middle of being rewritten isn't misreported.
+                time.sleep(0.15)
+                new, ops, mtime = w.poll()
             for line_no, text in new:
                 critical = any(p in text.lower() for p in self.patterns)
                 self._seal("log", w.name, line_no, text, {"critical": True} if critical else {})
@@ -265,11 +270,18 @@ class Agent:
     # ------------------------------------------------------------------ main loop
     def run(self) -> None:
         (self.state_dir / "agent.pid").write_text(str(os.getpid()))
-        signal.signal(signal.SIGTERM, lambda *_: setattr(self, "running", False))
-        signal.signal(signal.SIGINT, signal.default_int_handler)  # Ctrl+C works even when started in the background
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, lambda *_: setattr(self, "running", False))
+            signal.signal(signal.SIGINT, signal.default_int_handler)  # Ctrl+C works even when started in the background
         log("agent", c.bold(f"Root-Defense agent '{self.agent_id}' starting -> witness {self.cfg['witness_url']}"))
         for s in self.cfg["sources"]:
             log("agent", f"  watching {c.cyan(s['name'])}  {c.dim(s['path'])}")
+            p = Path(s["path"])
+            if p.exists() and not os.access(p, os.R_OK):
+                log("agent", c.red(f"Cannot read {p}. Fix: sudo usermod -aG adm $USER  (then log out and back in)"))
+                sys.exit(2)
+            if not p.exists() and not self.cfg.get("demo_traffic", True):
+                log("agent", c.yellow(f"{p} does not exist yet. Is rsyslog running?  sudo service rsyslog start"))
         if not self._load_state():
             # The witness decides whether this is a first start or a re-enrollment after state loss.
             self.enroll("no_local_state")

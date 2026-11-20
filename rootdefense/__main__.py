@@ -64,14 +64,39 @@ def cmd_init_agent(a) -> None:
     cfg.update({"agent_id": a.agent_id, "witness_url": a.witness.rstrip("/"), "token": a.token})
     del cfg["state_dir"]
     del cfg["sources"]
-    sources = [{"name": "auth.log", "path": str(DATA_DIR / "demo-logs" / "auth.log")},
-               {"name": "app.log", "path": str(DATA_DIR / "demo-logs" / "app.log")}]
-    if a.system_auth_log:
-        sources.append({"name": "system-auth.log", "path": "/var/log/auth.log"})
+    if a.real:
+        sources = [{"name": "auth.log", "path": "/var/log/auth.log"}]
+        cfg["demo_traffic"] = False
+    else:
+        sources = [{"name": "auth.log", "path": str(DATA_DIR / "demo-logs" / "auth.log")},
+                   {"name": "app.log", "path": str(DATA_DIR / "demo-logs" / "app.log")}]
+    for spec in a.source or []:
+        name, _, path = spec.partition("=")
+        if not path:
+            sys.exit(f"--source must look like NAME=PATH (got {spec!r})")
+        sources.append({"name": name, "path": path})
     cfg["sources"] = sources
     save(AGENT_CFG, cfg)
     print(c.green(f"Created {AGENT_CFG.relative_to(CONFIG_DIR.parent)} for agent '{a.agent_id}' -> {a.witness}"))
-    print(f"Start it with:  {c.bold('./rd up-agent')}   (demo log traffic + agent)")
+    for s in sources:
+        print(f"  watching {s['name']:<12} {s['path']}")
+    mode = "REAL system logs, no synthetic traffic" if a.real else "demo log traffic + agent"
+    print(f"Start it with:  {c.bold('./rd up-agent')}   ({mode})")
+    if a.real:
+        _check_readable(sources)
+
+
+def _check_readable(sources: list[dict]) -> None:
+    import os
+
+    for s in sources:
+        p = s["path"]
+        if not os.path.exists(p):
+            print(c.yellow(f"  ! {p} does not exist. Install and start rsyslog:  sudo apt install -y rsyslog && "
+                           "sudo service rsyslog start"))
+        elif not os.access(p, os.R_OK):
+            print(c.yellow(f"  ! Cannot read {p}. Add yourself to the adm group:  sudo usermod -aG adm $USER  "
+                           "(then log out and back in)"))
 
 
 # ---------------------------------------------------------------------------- chain
@@ -242,7 +267,9 @@ def cmd_up_agent(a) -> None:
     for s in cfg["sources"]:
         Path(s["path"]).parent.mkdir(parents=True, exist_ok=True)
     gen = None
-    if not a.no_traffic:
+    if not cfg.get("demo_traffic", True):
+        log("agent", c.bold("REAL MODE: watching real system logs only, no synthetic traffic"))
+    elif not a.no_traffic:
         gen = subprocess.Popen([sys.executable, "-m", "rootdefense", "demo-logs", "--quiet"], cwd=CONFIG_DIR.parent,
                                start_new_session=True)
     try:
@@ -255,7 +282,7 @@ def cmd_up_agent(a) -> None:
 def cmd_attack(a) -> None:
     from .demo import attack
 
-    attack(agent_config(), a.action, line=a.line, text=a.text)
+    attack(agent_config(), a.action, source=a.source, line=a.line, match=a.match, replace=a.replace, text=a.text)
 
 
 # ---------------------------------------------------------------------------- tools
@@ -358,7 +385,9 @@ def main() -> None:
     sp.add_argument("--witness", required=True, help="e.g. http://192.168.1.20:8800")
     sp.add_argument("--token", required=True)
     sp.add_argument("--agent-id", default="web-server-01")
-    sp.add_argument("--system-auth-log", action="store_true", help="also watch /var/log/auth.log (needs read access)")
+    sp.add_argument("--real", action="store_true",
+                    help="watch the real /var/log/auth.log instead of synthetic demo logs (needs the adm group)")
+    sp.add_argument("--source", action="append", metavar="NAME=PATH", help="extra log file to watch (repeatable)")
     sp.add_argument("--force", action="store_true")
     sp = add("up-agent", cmd_up_agent, "[System A] Start demo log traffic + agent")
     sp.add_argument("--no-traffic", action="store_true", help="do not generate demo log lines")
@@ -366,10 +395,13 @@ def main() -> None:
     sp = add("demo-logs", cmd_demo_logs, "[System A] Generate realistic demo log traffic")
     sp.add_argument("--rate", type=float, default=1.5, help="higher = slower")
     sp.add_argument("--quiet", action="store_true")
-    sp = add("attack", cmd_attack, "[System A] Simulate the attacker")
+    sp = add("attack", cmd_attack, "[System A] Attacker actions (use sudo for real /var/log files)")
     sp.add_argument("action", choices=["intrude", "edit", "delete", "kill", "wipe", "truncate"])
-    sp.add_argument("--line", type=int, help="target a specific line of auth.log")
-    sp.add_argument("--text", help="replacement text for 'edit'")
+    sp.add_argument("--source", default="auth.log", help="which watched log to tamper with (default auth.log)")
+    sp.add_argument("--line", type=int, help="target one line number")
+    sp.add_argument("--match", help="target every line containing this text")
+    sp.add_argument("--replace", nargs=2, metavar=("OLD", "NEW"), help="for 'edit': replace OLD with NEW in the targeted lines")
+    sp.add_argument("--text", help="for 'edit': replace the whole targeted line with this text")
 
     sp = add("verify-bundle", cmd_verify_bundle, "Independently verify a downloaded proof bundle against the chain")
     sp.add_argument("file")

@@ -24,6 +24,9 @@ AGENT_DEFAULTS: dict[str, Any] = {
     "heartbeat_interval": 5.0,
     "poll_interval": 0.5,
     "send_interval": 1.0,
+    # True: `up-agent` also runs the synthetic log generator (demo mode).
+    # False: real mode - only real system logs (e.g. /var/log/auth.log) are watched.
+    "demo_traffic": True,
     "sources": [
         {"name": "auth.log", "path": str(DATA_DIR / "demo-logs" / "auth.log")},
         {"name": "app.log", "path": str(DATA_DIR / "demo-logs" / "app.log")},
