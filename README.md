@@ -21,6 +21,26 @@ blockchain.
                                                            └───────────────────────────────────────────────┘
 ```
 
+## The problem
+
+CERT-In requires Indian organisations to keep security logs for **180 days** and to report specified incidents
+within **6 hours**. Those logs are the only record of how a breach happened and what was taken, but they live
+on the same machine the attacker now controls. With root access, the attacker deletes the incriminating lines
+(MITRE ATT&CK **T1070, Indicator Removal**) and the company can no longer prove anything to an auditor, a
+regulator or a court.
+
+**Hashing the logs on the same server does not fix this.** An attacker with root edits an entry and
+recomputes every hash after it. The file is again internally consistent and every local check passes.
+The evidence has to leave the machine, and its fingerprint has to land somewhere nobody can rewrite.
+
+## Why the blockchain is needed
+
+Take the chain away and the design fails its own threat model. Whoever controls a server (the attacker, or
+the company itself) can rewrite anything stored only on that server, including the witness database. The
+RootRegistry contract on Quai provides the one thing a compromised machine cannot fake: **an independent,
+public, write-once record of each fingerprint, made before the attack.** The contract has no function to edit
+or delete an anchor, and anyone can read it without asking us.
+
 ## What it catches
 
 | Attack | Result | How |
@@ -37,9 +57,15 @@ Only hashes and Merkle roots go on-chain. Raw log text never does.
 
 ## Requirements
 
-* **System A (agent):** Linux or macOS, Python 3.10+
-* **System B (witness):** Linux or macOS, Python 3.10+, Node.js 18+
+* **System A (agent):** Linux or macOS, Python 3.10+. A **Windows** laptop works through **WSL (Ubuntu)**:
+  clone and run everything inside the WSL terminal.
+* **System B (witness):** Linux or macOS, Python 3.10+, Node.js 18+. This is the only machine that holds the
+  Quai wallet key.
 * Both laptops on the same network (a phone hotspot works well at venues)
+* Optional: a third laptop or phone with a browser, used as the auditor's screen (`http://<B-ip>:8800`)
+
+If System A runs in WSL, the witness URL is System B's LAN address as usual. WSL reaches the LAN through Windows,
+so nothing else needs to be configured on the agent side.
 
 ## Setup (once, on both laptops)
 
@@ -64,6 +90,8 @@ If a firewall is on: `sudo ufw allow 8800/tcp`.
 ```
 
 Open the dashboard on System B (or on any laptop on the network): `http://<B-ip>:8800`
+It follows the system's light or dark setting. Use the sun/moon button in the top bar to switch, and the
+browser remembers the choice.
 
 ### Attack script (run on System A, in a second terminal)
 
@@ -105,8 +133,12 @@ groups | grep -q adm || sudo usermod -aG adm $USER     # then log out/in (WSL: r
 **Create real security events:**
 ```bash
 ssh nosuchuser@localhost          # type a wrong password 2-3 times → real "Failed password" lines (sshd)
-./rd attack intrude               # real failed sudo attempts + a real `sudo cat /etc/shadow` (asks for your password)
+./rd attack intrude               # real failed sudo attempts (a made-up wrong password is fed automatically)
 ```
+`attack intrude` never asks for your real password. The wrong-password attempts are sent to `sudo`
+non-interactively. The privileged step (a real `sudo cat /etc/shadow`) runs only from a root shell, where sudo
+needs no password. On WSL, open one from PowerShell with `wsl -u root`, then `cd` into the project and run
+`./rd attack intrude` again. On Linux, use `sudo -i` and do the same.
 
 **Tamper as root, like a real attacker:**
 ```bash
@@ -117,13 +149,28 @@ sudo nano /var/log/auth.log                                         # or delete/
 The attack tools edit the file in place (same inode), so rsyslog keeps logging afterwards. The agent reads the
 existing contents of `auth.log` on its first start, so those lines are witnessed from that moment on.
 
-## Switching to Quai Network (Orchard testnet)
+## Quai Network (Orchard testnet)
 
-The contract and the code already support Quai through the official `quais` SDK. The demo runs on a local
-EVM chain only because the public faucet was unavailable. To switch:
+Anchoring runs on Quai through the official `quais` SDK. Out of the box `./rd up` uses a local EVM chain
+(Hardhat), so the demo also works offline.
 
-1. In Pelagus Wallet, create a **Cyprus-1** address, get test QUAI (Quai Discord), and export its private key.
-2. In `config/witness.yaml` set:
+**Live deployment (Orchard, chain 15000, zone Cyprus-1):**
+
+| | |
+|---|---|
+| RootRegistry contract | [`0x0066F967645A4B082E7411387Da6a0A59Fd33AA3`](https://orchard.quaiscan.io/address/0x0066F967645A4B082E7411387Da6a0A59Fd33AA3) |
+| Test anchor (written and read back, root matched) | [`0x0040002c…501f08d`](https://orchard.quaiscan.io/tx/0x0040002cedf7c9e4f36791db508adff3c1b52131310b601591e56547e501f08d) |
+| Cost of the deployment plus the first anchor | ≈ 0.0009 QUAI |
+| Time for an anchor to confirm | ≈ 8–10 s |
+
+**Set it up on System B (only there; System A never holds the key):**
+
+1. **Get a funded Cyprus-1 key.** The address must start with `0x00`. Pelagus Wallet doesn't offer
+   private-key export, so the simplest route is a **dedicated witness key**: create a fresh Cyprus-1 key on
+   System B (for example with the `quais` SDK that `./rd setup` installs in `chain/node_modules`), write it
+   straight into the config file without printing it, then send it a few test QUAI from Pelagus. 10 QUAI covers
+   thousands of anchors. A dedicated key also means the witness never holds your main wallet.
+2. In `config/witness.yaml` (gitignored; keep it `chmod 600`) set:
    ```yaml
    anchor_interval: 30
    chain:
@@ -131,9 +178,43 @@ EVM chain only because the public faucet was unavailable. To switch:
      quai:
        private_key: "0x…"      # testnet key only, never a key holding real funds
    ```
-3. `./rd quai-info`: should show `zone: cyprus1` and a balance.
-4. `./rd deploy --quai`: deploys RootRegistry and saves the address.
-5. `./rd up`: anchors now go to Quai. The dashboard links every transaction to `orchard.quaiscan.io`.
+3. `./rd quai-info`: should show zone `0x00` (Cyprus-1) and a balance. It prints the address, never the key.
+4. `./rd deploy --quai`: deploys RootRegistry and saves the address in the config.
+5. `./rd up --reset`: anchors now go to Quai, and the dashboard links every transaction to
+   `orchard.quaiscan.io`. Use `--reset` once, because batches anchored to the old local chain can't verify
+   against the new contract.
+
+Because a Quai anchor takes a few seconds to confirm, new lines in the live stream show **◷ witness** first and
+turn **✓ on-chain** once their batch is confirmed.
+
+Quai details that a plain Ethereum port gets wrong, all handled in `chain/quai.js`:
+* Addresses carry a zone prefix, and the code checks that the wallet is inside a zone.
+* Transactions must be signed with `quais`, not ethers.
+* The RPC needs `usePathing`.
+* Deployments must include the IPFS hash of the contract metadata. Root-Defense reads it from the CBOR
+  trailer that solc already embeds in the bytecode, so no IPFS upload is needed.
+
+## Reading what's on-chain: verify without trusting us
+
+The chain stores **fingerprints, not logs**. Each anchor records `streamId` (which server), `root` (the
+Merkle root of the batch), `firstSeq`–`lastSeq`, `count`, `reason` (0 scheduled, 1 critical, 2 alarm),
+`timestamp` and `blockNumber`. The log text stays encrypted on the witness. To check a log, recompute its
+fingerprint and compare it with the one on the chain.
+
+| Who | How |
+|---|---|
+| Dashboard | **Auditor → Collect live logs & verify** reads every anchor back from the contract (`getAnchor`) and recomputes it. **Blockchain** lists every anchor with its explorer link. |
+| Anyone with a browser | Open the contract on quaiscan: the logs tab shows each `Anchored` event, and **Read Contract** offers `getAnchor(i)` and `anchorCount()`. |
+| An external auditor, offline | **Auditor → Download proof bundle**, then `./rd verify-bundle root-defense-proof-*.json`. It rebuilds each disputed line's Merkle proof and compares the result with the root it reads straight from the chain. |
+
+Change a single character in a log line, or in the bundle, and the recomputed root no longer matches the one on
+the chain.
+
+## CERT-In compliance evidence
+
+The **Compliance** tab tracks the 180-day retention requirement for each server. It also lists every critical
+incident with a **6-hour reporting countdown** and the on-chain evidence for it. **Generate evidence report**
+(`/api/v1/compliance/report`) produces a printable page for the regulator from the same anchored records.
 
 ## Commands
 
@@ -164,20 +245,44 @@ EVM chain only because the public faucet was unavailable. To switch:
 * **Auditor:** recomputes everything, compares each root with the contract, and diffs the current files against
   the witnessed lines (pairing edited lines by similarity). Every finding carries an inclusion proof.
 
+## Performance
+
+Measured with `./rd bench` (5,000 entries, one laptop, single process). Run it on your own hardware for current
+numbers.
+
+| Metric | Result |
+|---|---|
+| Agent sealing (hash chain + Ed25519 + key ratchet) | ≈ 6,000–12,000 entries/s |
+| Witness ingestion (verify + encrypt + store) | ≈ 3,000–6,000 entries/s |
+| Merkle root over 5,000 entries | ≈ 15 ms, inclusion proof 13 hashes |
+| Edit/delete on System A → alarm on the dashboard | 0.2–0.9 s (measured end to end) |
+| Agent killed → silence alarm | ≈ 8 s |
+| Quai anchor confirmation | ≈ 8–10 s |
+
+Each on-chain transaction commits to a whole batch, so the chain cost depends on the anchor interval, not on
+log volume.
+
 ## Project layout
 
-```
-rd                      launcher
-rootdefense/core/       crypto (hash chain, ratchet, Merkle) and config
-rootdefense/agent.py    System A agent
-rootdefense/witness.py  System B witness, silence monitor, Merkle batcher
-rootdefense/audit.py    auditor engine and proof bundles
-rootdefense/webapp.py   HTTP API, compliance report
-rootdefense/chain.py    local EVM (web3.py) and Quai (quais) adapters
-chain/                  RootRegistry.sol, compiler, Hardhat config, quai.js bridge
-web/                    dashboard
-tests/                  unit and end-to-end tests  (.venv/bin/python -m pytest)
-```
+| Path | What it is |
+|---|---|
+| `rd` | Launcher (`./rd <command>`) |
+| `scripts/setup.sh` | Creates the venv, installs dependencies, compiles the contract |
+| `rootdefense/core/crypto.py` | Domain-separated hashes, Ed25519 key ratchet, RFC 6962 Merkle trees and proofs |
+| `rootdefense/core/config.py` | Defaults and YAML config loading |
+| `rootdefense/agent.py` | System A agent: watches files, seals entries, signed heartbeats, reports edits |
+| `rootdefense/witness.py` | System B witness: verifies arrivals, silence monitor, Merkle batcher, anchoring |
+| `rootdefense/store.py` | Witness storage (SQLite) with append-only triggers |
+| `rootdefense/audit.py` | Auditor engine: history vs chain, live logs vs witness, proof bundles |
+| `rootdefense/webapp.py` | HTTP API, dashboard, compliance report |
+| `rootdefense/chain.py` | Local EVM (web3.py) and Quai (quais bridge) adapters |
+| `rootdefense/demo.py` | Demo traffic generator and attacker actions (simulated and real mode) |
+| `rootdefense/bench.py` | Benchmark |
+| `chain/contracts/RootRegistry.sol` | The on-chain half: append-only anchors, no edit or delete function |
+| `chain/quai.js` | Node bridge to Quai: info, deploy, anchor, read |
+| `chain/compile.js` | solc build (London EVM) → `chain/build/RootRegistry.json` |
+| `web/` | Dashboard (plain HTML/CSS/JS, no build step) |
+| `tests/` | Unit, end-to-end and CLI tests (`.venv/bin/python -m pytest`, 11 passing) |
 
 ## Honest limits
 
@@ -190,3 +295,23 @@ tests/                  unit and end-to-end tests  (.venv/bin/python -m pytest)
 * Log rotation currently looks like truncation and is reported as tampering; rotation-aware handling is future work.
 * Agent-to-witness traffic is plain HTTP on the LAN for the demo. Put TLS (e.g. a reverse proxy) in front of the
   witness for a real deployment.
+* Lines written since the last anchor are protected by the witness and the hash chain, but not yet by the
+  blockchain. That window is the anchor interval (30 s on Quai), closed early by any critical event or alarm.
+* The chain proves a line *existed and was changed*. Recovering the text of a deleted line relies on the
+  witness's encrypted copy, and identifying *who* changed it needs host forensics.
+
+## Prior art
+
+Merkle-tree logging is well established: Certificate Transparency (RFC 6962), Trillian, Sigstore Rekor,
+immudb. Root-Defense doesn't claim a new primitive. Its contribution is the combination built for the
+incident-evidence workflow:
+* an off-host witness that sees every line within a second;
+* forward-secure signatures, so a stolen key can't rewrite the past;
+* a silence alarm for a killed agent;
+* write-once public anchoring on Quai;
+* an auditor that names the exact changed line, with a proof that anyone can check against the chain;
+* CERT-In retention and 6-hour reporting evidence.
+
+---
+
+*Track 02 · Problem B3 · The Big Hack 2.0*
