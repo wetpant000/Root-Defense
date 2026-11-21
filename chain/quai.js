@@ -35,6 +35,15 @@ function wallet(req) {
   return w;
 }
 
+// Quai deployments need the IPFS hash (CIDv0, "Qm...") of the contract metadata. solc already embeds it in
+// the bytecode's CBOR trailer as  a2 64 "ipfs" 58 22 <34-byte multihash>, so read it from there.
+function metadataIpfsHash() {
+  const b = artifact.bytecode;
+  const i = b.lastIndexOf("a264697066735822");
+  if (i < 0) throw new Error("No IPFS metadata hash in the bytecode - recompile with: node compile.js");
+  return quais.encodeBase58("0x" + b.slice(i + 16, i + 16 + 68));
+}
+
 async function main() {
   const req = JSON.parse(fs.readFileSync(0, "utf8"));
   const p = provider(req.rpc);
@@ -52,7 +61,7 @@ async function main() {
     }
     case "deploy": {
       const w = wallet(req);
-      const factory = new quais.ContractFactory(artifact.abi, artifact.bytecode, w);
+      const factory = new quais.ContractFactory(artifact.abi, artifact.bytecode, w, metadataIpfsHash());
       const c = await factory.deploy();
       await c.waitForDeployment();
       const tx = c.deploymentTransaction();

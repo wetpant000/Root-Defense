@@ -138,22 +138,41 @@ def _targets(lines: list[str], line: int | None, match: str | None) -> list[int]
 
 
 def _real_intrusion() -> None:
-    """Generate REAL security events through PAM/sudo, so the system itself writes them to auth.log."""
-    import getpass
+    """Generate REAL security events through PAM/sudo, so the system itself writes them to auth.log.
+
+    Never asks for anyone's real password:
+      * wrong-password attempts feed sudo a made-up password on stdin (non-interactive);
+      * the privileged read only runs from a root shell (e.g. `wsl -u root`), where sudo needs no password.
+    """
+    import pwd
     import subprocess
 
-    user = getpass.getuser()
+    is_root = os.geteuid() == 0
+    # The "victim" account whose failed sudo attempts we generate: the invoking user, or the first normal user.
+    if is_root:
+        victims = [p.pw_name for p in pwd.getpwall() if 1000 <= p.pw_uid < 60000]
+        user = os.environ.get("SUDO_USER") or (victims[0] if victims else None)
+    else:
+        user = pwd.getpwuid(os.getuid()).pw_name
     print(c.bold("Real intrusion: these commands run for real and the system logs them itself."))
-    print(c.dim("  1/2  three sudo attempts with a wrong password (real PAM authentication failures)"))
-    for _ in range(3):
-        subprocess.run(["sudo", "-k"], check=False)
-        subprocess.run(["sudo", "-S", "-p", "", "true"], input="definitely-wrong-password\n", text=True,
-                       capture_output=True, check=False)
-        time.sleep(0.4)
-    print(c.dim("  2/2  privileged read of the password hashes:  sudo cat /etc/shadow   (enter YOUR password)"))
-    subprocess.run(["sudo", "sh", "-c", "cat /etc/shadow > /dev/null"], check=False)
-    print(c.red(f"Done. auth.log now holds real entries: failed sudo attempts by '{user}' and 'COMMAND=/usr/bin/sh -c cat /etc/shadow'."))
-    print("Next, cover the tracks (as root):  " + c.bold("sudo ./rd attack delete --match '/etc/shadow'"))
+    if user:
+        print(c.dim(f"  1/2  three sudo attempts by '{user}' with a WRONG password (real PAM authentication failures)"))
+        for _ in range(3):
+            cmd = ["sudo", "-S", "-k", "-p", "", "true"]
+            if is_root:
+                cmd = ["runuser", "-u", user, "--"] + cmd
+            subprocess.run(cmd, input="definitely-wrong-password\n", text=True, capture_output=True, check=False)
+            time.sleep(0.4)
+    if is_root:
+        print(c.dim("  2/2  privileged read of the password hashes via sudo (no password needed as root)"))
+        subprocess.run(["sudo", "-n", "sh", "-c", "cat /etc/shadow > /dev/null"], check=False)
+        print(c.red("Done. auth.log now holds real entries: failed sudo attempts and 'COMMAND=/usr/bin/sh -c cat /etc/shadow'."))
+        print("Next, cover the tracks:  " + c.bold("./rd attack delete --match '/etc/shadow'"))
+    else:
+        print(c.yellow("  2/2  skipped: the privileged step needs a root shell. It will NOT ask for your password."))
+        print("       Open a root shell first. WSL: in PowerShell run  " + c.bold("wsl -u root") +
+              "  then  cd ~<user>/root-defense && ./rd attack intrude")
+        print(c.red("Done. auth.log now holds real failed sudo attempts."))
 
 
 def attack(cfg: dict, action: str, source: str = "auth.log", line: int | None = None, match: str | None = None,
