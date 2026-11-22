@@ -9,6 +9,12 @@ Nobody can rewrite those roots, including the company itself. An auditor portal 
 **TAMPERED** and highlights the exact line that changed, with a proof that anyone can check against the
 blockchain.
 
+### ▶ 30-second intro
+
+[![Root-Defense intro: click to watch the video](docs/intro.gif)](https://github.com/wetpant000/Root-Defense/raw/main/docs/intro.mp4)
+
+*Click the preview to watch the full video with sound ([`docs/intro.mp4`](docs/intro.mp4)).*
+
 ```
  System A - monitored server (attacker may get root)        System B - witness (separate machine)
  ┌──────────────────────────────────────────────┐          ┌───────────────────────────────────────────────┐
